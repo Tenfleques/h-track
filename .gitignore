@@ -1,0 +1,5 @@
+bodypix_resnet50_float_model-stride16
+images
+.idea
+*__pycache
+*__pycache__
