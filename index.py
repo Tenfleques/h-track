@@ -19,3 +19,5 @@ if __name__ == "__main__":
     # we like the other defaults
     body_seg = BodySeg(image)
     body_seg.process_image()
+    body_seg.process_part_heatmaps()
+    # body_seg.evaluate_outputs()

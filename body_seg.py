@@ -5,8 +5,9 @@ import math
 from PIL import Image
 from utils import load_graph_model, get_input_tensors, get_output_tensors
 import tensorflow as tf
+import cv2
 
-# make tensorflow stop spamming messages
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = "3"
 KEYPOINT_NAMES = [
     "nose", "leftEye", "rightEye", "leftEar", "rightEar", "leftShoulder",
@@ -64,7 +65,8 @@ class BodySeg:
     mask = None
     segmentation_mask = None
     part_heatmaps = None
-    # source img is of size int(imgSide) // self.output_stride) * self.output_stride + 1 where side = [width, height]
+    key_point_positions = []
+# source img is of size int(imgSide) // self.output_stride) * self.output_stride + 1 where side = [width, height]
 
     def __init__(self, img, model_path='./bodypix_resnet50_float_model-stride16/model.json', output_stride=16):
         print("[INFO] Loading model...")
@@ -110,10 +112,38 @@ class BodySeg:
             self.img = (self.img / 127.5) - 1
         else:
             print('Unknown Model')
-        sample_image = self.img[tf.newaxis, ...]
         print("done.\nRunning inference...", end="")
 
-        self.__evaluate_outputs(sample_image)
+        sample_image = self.img[tf.newaxis, ...]
+
+        # evaluate the loaded model directly
+        with tf.compat.v1.Session(graph=self.graph) as sess:
+            self.results = sess.run(self.output_tensor_names, feed_dict={
+                self.input_tensor: sample_image})
+
+        # assert len(results) == 8
+        print("done. {} outputs received".format(len(self.results)))  # should be 8 outputs
+
+        self.set_float_segments(False)
+
+        for idx, name in enumerate(self.output_tensor_names):
+            if 'displacement_bwd' in name:
+                self.displacement_bwd()
+            elif 'float_heatmaps' in name:
+                self.heatmaps = np.squeeze(self.results[idx], 0)
+                print('heatmaps', name, self.heatmaps.shape)
+            elif 'float_long_offsets' in name:
+                self.long_offsets = np.squeeze(self.results[idx], 0)
+                print('long_offsets', name, self.long_offsets.shape)
+            elif 'float_short_offsets' in name:
+                self.offsets = np.squeeze(self.results[idx], 0)
+                print('offsets', name, self.offsets.shape)
+            elif 'float_part_heatmaps' in name:
+                self.part_heatmaps = np.squeeze(self.results[idx], 0)
+                print('part_heatmaps', name,  self.part_heatmaps.shape)
+            elif 'float_part_offsets' in name:
+                self.part_offsets = np.squeeze(self.results[idx], 0)
+                print('partOffsets', name, self.part_offsets.shape)
 
     def __get_results_by_key(self, key):
         # checks is key is found in the results return
@@ -174,39 +204,46 @@ class BodySeg:
             return
         print('displacement_bwd', "displacement_bwd", output_tensor.shape)
 
-    def __evaluate_outputs(self, sample_image):
-        # evaluate the loaded model directly
-        with tf.compat.v1.Session(graph=self.graph) as sess:
-            self.results = sess.run(self.output_tensor_names, feed_dict={
-                self.input_tensor: sample_image})
-
-        # assert len(results) == results
-        print("done. {} outputs received".format(len(self.results)))  # should be 8 outputs
-
-        self.set_float_segments(True)
+    def process_part_heatmaps(self):
+        print(self.output_tensor_names)
 
         for idx, name in enumerate(self.output_tensor_names):
-            if 'displacement_bwd' in name:
-                self.displacement_bwd()
-            elif 'float_heatmaps' in name:
-                self.heatmaps = np.squeeze(self.results[idx], 0)
-                print('heatmaps', name, self.heatmaps.shape)
-            elif 'float_long_offsets' in name:
-                self.long_offsets = np.squeeze(self.results[idx], 0)
-                print('long_offsets', name, self.long_offsets.shape)
-            elif 'float_short_offsets' in name:
-                self.offsets = np.squeeze(self.results[idx], 0)
-                print('offsets', name, self.offsets.shape)
-            elif 'float_part_heatmaps' in name:
+            if 'float_part_heatmaps' in name:
                 self.part_heatmaps = np.squeeze(self.results[idx], 0)
-                print('part_heatmaps', name,  self.part_heatmaps.shape)
-            elif 'float_part_offsets' in name:
-                self.part_offsets = np.squeeze(self.results[idx], 0)
-                print('partOffsets', name, self.part_offsets.shape)
+                print('part_heatmaps', name, self.part_heatmaps.shape)
+                break
 
-        # BODYPART SEGMENTATION
+        # Part Heatmaps, PartOffsets,
+        if self.mask is not None:
+            for i in range(self.part_heatmaps.shape[2]):
 
+                heatmap = self.part_heatmaps[:, :, i]  # First Heat map
+                # heatmap[np.logical_not(tf.math.reduce_any(self.mask, axis=-1).numpy())] = -1
+                # Set portions of heatmap where person is not present in segmentation mask, set value to -1
+                print('Heatmap: ' + PART_CHANNELS[i], heatmap.shape)
+                # cv2.imshow('Heatmap: ' + PART_CHANNELS[i], heatmap)
+                # cv2.waitKey(1000)
 
+                # SHOW HEATMAPS
+                # plt.clf()
+                # plt.title('Heatmap: ' + PART_CHANNELS[i])
+                # plt.ylabel('y')
+                # plt.xlabel('x')
+                # plt.imshow(heatmap * self.output_stride)
+                # plt.show()
+                #
+                # heatmap_sigmoid = tf.sigmoid(heatmap)
+                # y_heat, x_heat = np.unravel_index(
+                #     np.argmax(heatmap_sigmoid, axis=None), heatmap_sigmoid.shape)
+
+                # Offset Corresponding to heatmap x and y
+                # x_offset = self.part_offsets[y_heat, x_heat, i]
+                # y_offset = self.part_offsets[y_heat, x_heat, self.part_heatmaps.shape[2]+i]
+                #
+                # key_x = x_heat * self.output_stride + x_offset
+                # key_y = y_heat * self.output_stride + y_offset
+
+    def evaluate_outputs(self):
         # Draw Segmented Output
         mask_img = Image.fromarray(self.segmentation_mask * 255)
         mask_img = mask_img.resize(
@@ -226,49 +263,20 @@ class BodySeg:
         plt.imshow(bg)
         plt.show()
 
-        # Part Heatmaps, PartOffsets,
-        if self.mask is not None:
-            for i in range(self.part_heatmaps.shape[2]):
-
-                heatmap = self.part_heatmaps[:, :, i]  # First Heat map
-                heatmap[np.logical_not(tf.math.reduce_any(self.mask, axis=-1).numpy())] = -1
-                # Set portions of heatmap where person is not present in segmentation mask, set value to -1
-
-                # SHOW HEATMAPS
-
-                plt.clf()
-                plt.title('Heatmap: ' + PART_CHANNELS[i])
-                plt.ylabel('y')
-                plt.xlabel('x')
-                plt.imshow(heatmap * self.output_stride)
-                plt.show()
-
-                heatmap_sigmoid = tf.sigmoid(heatmap)
-                y_heat, x_heat = np.unravel_index(
-                    np.argmax(heatmap_sigmoid, axis=None), heatmap_sigmoid.shape)
-
-                # Offset Corresponding to heatmap x and y
-                x_offset = self.part_offsets[y_heat, x_heat, i]
-                y_offset = self.part_offsets[y_heat, x_heat, self.part_heatmaps.shape[2]+i]
-
-                key_x = x_heat * self.output_stride + x_offset
-                key_y = y_heat * self.output_stride + y_offset
-
-        #
+        self.process_part_heatmaps()
         #
         # POSE ESTIMATION
-        self.key_point_positions = []
         key_scores = []
         for i in range(self.heatmaps.shape[2]):
             heatmap = self.heatmaps[:, :, i]  # First Heat map
             # SHOW HEATMAPS
 
-            plt.clf()
-            plt.title('Heatmap' + str(i) + KEYPOINT_NAMES[i])
-            plt.ylabel('y')
-            plt.xlabel('x')
-            plt.imshow(heatmap * self.output_stride)
-            plt.show()
+            # plt.clf()
+            # plt.title('Heatmap' + str(i) + KEYPOINT_NAMES[i])
+            # plt.ylabel('y')
+            # plt.xlabel('x')
+            # plt.imshow(heatmap * self.output_stride)
+            # plt.show()
 
             heatmap_sigmoid = tf.sigmoid(heatmap)
             y_heat, x_heat = np.unravel_index(
@@ -302,35 +310,35 @@ class BodySeg:
         # Show Bounding BOX
         # # Show all keypoints
         #
-        plt.figure(0)
-        implot = plt.imshow(self.img)
+        cv2.imshow("image", self.img)
+        cv2.waitKey(5000)
 
-        x_points = []
-        y_points = []
-        for i, [x, y] in enumerate(self.key_point_positions):
-            x_points.append(x)
-            y_points.append(y)
-        plt.scatter(x=x_points, y=y_points, c='r', s=40)
-        plt.show()
+        # x_points = []
+        # y_points = []
+        # for i, [x, y] in enumerate(self.key_point_positions):
+        #     x_points.append(x)
+        #     y_points.append(y)
+        # plt.scatter(x=x_points, y=y_points, c='r', s=40)
+        # plt.show()
+        # #
+        # #
+        # # # DEBUG KEYPOINTS
+        # # #  Show Each Keypoint and it's name
+        # # '''
+        # for i, [x, y] in enumerate(self.key_point_positions):
+        #     plt.figure(i)
+        #     plt.title('keypoint' + str(i) + KEYPOINT_NAMES[i])
+        #     implot = plt.imshow(self.img)
         #
-        #
-        # # DEBUG KEYPOINTS
-        # #  Show Each Keypoint and it's name
-        # '''
-        for i, [x, y] in enumerate(self.key_point_positions):
-            plt.figure(i)
-            plt.title('keypoint' + str(i) + KEYPOINT_NAMES[i])
-            implot = plt.imshow(self.img)
-
-            plt.scatter(x=[x], y=[y], c='r', s=40)
-            plt.show()
-        # '''
-        #
-        # # SHOW CONNECTED KEYPOINTS
-        plt.figure(20)
-        for pt1, pt2 in CONNECTED_KEYPOINT_INDICES:
-            plt.title('connection points')
-            implot = plt.imshow(self.img)
-            plt.plot((self.key_point_positions[pt1][0], self.key_point_positions[pt2][0]), (
-                self.key_point_positions[pt1][1], self.key_point_positions[pt2][1]), 'ro-', linewidth=2, markersize=5)
-        plt.show()
+        #     plt.scatter(x=[x], y=[y], c='r', s=40)
+        #     plt.show()
+        # # '''
+        # #
+        # # # SHOW CONNECTED KEYPOINTS
+        # plt.figure(20)
+        # for pt1, pt2 in CONNECTED_KEYPOINT_INDICES:
+        #     plt.title('connection points')
+        #     implot = plt.imshow(self.img)
+        #     plt.plot((self.key_point_positions[pt1][0], self.key_point_positions[pt2][0]), (
+        #         self.key_point_positions[pt1][1], self.key_point_positions[pt2][1]), 'ro-', linewidth=2, markersize=5)
+        # plt.show()
